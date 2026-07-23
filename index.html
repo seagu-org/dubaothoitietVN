@@ -1,0 +1,1162 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Dự báo mưa tổ hợp Việt Nam — theo tỉnh/thành và phường/xã</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #16202b; --muted: #6b7a8c; --line: #dfe6ee;
+    --panel: rgba(255,255,255,.96); --accent: #1f6fb2; --shadow: 0 2px 12px rgba(16,32,48,.18);
+  }
+  * { box-sizing: border-box; }
+  html, body, #root { height: 100%; margin: 0; }
+  body {
+    font: 14px/1.45 "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    color: var(--fg); background: var(--bg); overflow: hidden;
+  }
+  #map { position: absolute; inset: 0; z-index: 0; background: #eef2f6; }
+  .leaflet-container { font: inherit; }
+
+  .card {
+    background: var(--panel); border-radius: 10px; box-shadow: var(--shadow);
+    border: 1px solid var(--line);
+  }
+  .float { position: absolute; z-index: 500; }
+  .topleft {
+    top: 12px; left: 12px; width: 330px; max-width: calc(100vw - 24px);
+    /* leave room for the timeline; the column scrolls instead of running off */
+    max-height: calc(100vh - 86px); overflow-y: auto; overflow-x: hidden;
+    padding-right: 4px; scrollbar-width: thin;
+  }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+
+  .searchbox { position: relative; }
+  .searchbox input {
+    width: 100%; padding: 11px 13px; border: 0; border-radius: 10px;
+    font: inherit; outline: none; background: transparent; color: var(--fg);
+  }
+  .results {
+    position: absolute; top: 100%; left: 0; right: 0; margin-top: 6px;
+    max-height: 320px; overflow-y: auto; z-index: 10;
+  }
+  .results button {
+    display: block; width: 100%; text-align: left; padding: 8px 12px;
+    background: none; border: 0; border-bottom: 1px solid var(--line);
+    font: inherit; color: inherit; cursor: pointer;
+  }
+  .results button:hover { background: #eef5fb; }
+  .results .sub { color: var(--muted); font-size: 12px; }
+
+  .pad { padding: 11px 13px; }
+  .title { font-weight: 700; font-size: 13px; margin: 0 0 8px; }
+  .hint { color: var(--muted); font-size: 11.5px; line-height: 1.4; }
+
+  .seg { display: flex; gap: 4px; flex-wrap: wrap; }
+  .seg button {
+    flex: 1 1 auto; padding: 6px 9px; border-radius: 7px; border: 1px solid var(--line);
+    background: #fff; font: inherit; font-size: 12.5px; cursor: pointer; color: var(--fg);
+    white-space: nowrap;
+  }
+  .seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .seg button:disabled { opacity: .45; cursor: default; }
+
+  .legend-row { display: flex; align-items: center; gap: 9px; padding: 3px 0; font-size: 12.5px; }
+  .swatch { width: 15px; height: 15px; border-radius: 50%; flex: 0 0 auto; border: 1px solid rgba(0,0,0,.16); }
+
+  /* ---- bottom timeline (day slider + autoplay) ---- */
+  .timeline {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 500;
+    background: #1c2530; color: #fff; box-shadow: 0 -2px 12px rgba(0,0,0,.28);
+  }
+  .tl-inner { display: flex; align-items: stretch; }
+  .tl-play {
+    flex: 0 0 auto; width: 56px; border: 0; background: #2b3746; color: #ffd54a;
+    font-size: 19px; cursor: pointer; border-right: 1px solid #3a4757;
+  }
+  .tl-play:hover { background: #35435a; }
+  .tl-days { flex: 1 1 auto; display: flex; overflow-x: auto; }
+  .tl-day {
+    flex: 1 0 96px; border: 0; border-right: 1px solid #2f3a49; background: transparent;
+    color: #b9c6d4; font: inherit; padding: 9px 4px 11px; cursor: pointer;
+    text-align: center; position: relative;
+  }
+  .tl-day:hover { background: #26313e; }
+  .tl-day.on { color: #ffd54a; font-weight: 700; }
+  .tl-day.on::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: #ffd54a;
+  }
+  .tl-dow { font-size: 13px; }
+  .tl-date { font-size: 11px; opacity: .85; }
+  .tl-partial { font-size: 10px; color: #8fa2b5; }
+
+  /* ---- right detail drawer ---- */
+  .drawer {
+    position: absolute; top: 0; right: 0; bottom: 0; width: 480px;
+    max-width: 100vw; z-index: 900; background: #fff; border-left: 1px solid var(--line);
+    box-shadow: -3px 0 16px rgba(16,32,48,.16); display: flex; flex-direction: column;
+  }
+  .drawer header {
+    padding: 13px 15px; border-bottom: 1px solid var(--line); display: flex;
+    align-items: flex-start; gap: 10px;
+  }
+  .drawer header h2 { margin: 0; font-size: 17px; }
+  .drawer header .sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+  .drawer .body { overflow-y: auto; padding: 13px 15px 32px; }
+  .xbtn {
+    margin-left: auto; border: 0; background: #eef2f6; border-radius: 7px;
+    width: 30px; height: 30px; font-size: 17px; cursor: pointer; flex: 0 0 auto; color: var(--muted);
+  }
+  .chart { margin: 0 0 20px; }
+  .chart h3 { font-size: 13px; margin: 0 0 2px; }
+  .chart .cap { color: var(--muted); font-size: 11.5px; margin: 0 0 6px; }
+  .keys { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); margin-bottom: 4px; }
+  .key { display: flex; align-items: center; gap: 5px; }
+  .key i { width: 11px; height: 11px; border-radius: 2px; display: inline-block; }
+
+  .bulletin { white-space: pre-wrap; font-size: 13px; line-height: 1.6; }
+  .btn-link {
+    background: none; border: 0; color: var(--accent); font: inherit; font-size: 12px;
+    cursor: pointer; padding: 0; text-decoration: underline;
+  }
+  .stale {
+    background: #fff3cd; border: 1px solid #ffe08a; color: #6b5400;
+    border-radius: 8px; padding: 8px 11px; font-size: 12px;
+  }
+  .loading { padding: 40px; text-align: center; color: var(--muted); }
+  @media (max-width: 720px) {
+    .drawer { width: 100vw; }
+    .topleft { width: calc(100vw - 24px); }
+  }
+</style>
+</head>
+<body>
+<div id="root"><div class="loading">Đang tải dữ liệu dự báo…</div></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef, useCallback } = React;
+
+const DOW = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"];
+const MODEL_COLOR = { ifs_ens: "#f0902a", gefs: "#5b9bd5", aifs_ens: "#77b255", ensemble: "#37474f" };
+// Each source is ALREADY an ensemble (51/31/51 members), so "Tổ hợp" here is
+// ambiguous on its own — the panel carries a note saying it is the median
+// ACROSS the three models, not across members.
+const ENSEMBLE_LABEL = "Tổ hợp";
+const FIELDS = {
+  q50: { key: "q50", label: "Trung vị (Q50)", unit: "mm/24h" },
+  q90: { key: "q90", label: "Kịch bản bất lợi (Q90)", unit: "mm/24h" },
+  x50: { key: "x50", label: "Xác suất > 50 mm", unit: "%" },
+};
+// Probability shading reuses the same 5 legend colours at 10/25/50/75 %.
+const PROB_BINS = [
+  { min: 0, max: 5, color: "#e8f0f7", label: "< 5%" },
+  { min: 5, max: 20, color: "#2f8fe0", label: "5–20%" },
+  { min: 20, max: 40, color: "#2fa84f", label: "20–40%" },
+  { min: 40, max: 70, color: "#f2a02a", label: "40–70%" },
+  { min: 70, max: null, color: "#e8422e", label: "> 70%" },
+];
+// VNForce-cast raster display modes — bins MUST mirror MODES in
+// process_gmfcast.py so PNG overlay, legend and click values agree.
+//   cls  = cumulative, cuutro 5-class (default; comparable with the models)
+//   fine = cumulative, detailed
+//   int  = per-interval intensity, mm/h
+const NOWCAST_MODES = {
+  cls: {
+    label: "Phân loại", legendTitle: "VNF-cast — mưa tích lũy", unit: "mm",
+    sub: "Lượng mưa cộng dồn từ giờ phát tin",
+    bins: [
+      { min: 0, max: 0.5, color: "#e8f0f7", label: "Không mưa" },
+      { min: 0.5, max: 16, color: "#2f8fe0", label: "Mưa nhỏ (<16mm)" },
+      { min: 16, max: 51, color: "#2fa84f", label: "Mưa vừa (từ 16mm đến 51mm)" },
+      { min: 51, max: 100, color: "#f2a02a", label: "Mưa to (từ 51mm đến 100mm)" },
+      { min: 100, max: null, color: "#e8422e", label: "Mưa rất to (>100mm)" },
+    ],
+  },
+  fine: {
+    label: "Chi tiết", legendTitle: "VNF-cast — mưa tích lũy", unit: "mm",
+    sub: "Lượng mưa cộng dồn từ giờ phát tin (chi tiết)",
+    bins: [
+      { min: 1, max: 5, color: "#c7e9c0", label: "1–5 mm" },
+      { min: 5, max: 10, color: "#a1d99b", label: "5–10" },
+      { min: 10, max: 20, color: "#41ab5d", label: "10–20" },
+      { min: 20, max: 30, color: "#7fcdbb", label: "20–30" },
+      { min: 30, max: 50, color: "#41b6c4", label: "30–50" },
+      { min: 50, max: 70, color: "#1d91c0", label: "50–70" },
+      { min: 70, max: 100, color: "#225ea8", label: "70–100" },
+      { min: 100, max: 150, color: "#253494", label: "100–150" },
+      { min: 150, max: 200, color: "#54278f", label: "150–200" },
+      { min: 200, max: null, color: "#7a0177", label: "> 200" },
+    ],
+  },
+  int: {
+    label: "Cường độ", legendTitle: "VNF-cast — cường độ mưa", unit: "mm/h",
+    sub: "Cường độ mưa từng bước dự báo",
+    bins: [
+      { min: 0.5, max: 1, color: "#c7e9c0", label: "0,5–1 mm/h" },
+      { min: 1, max: 2, color: "#7fcdbb", label: "1–2" },
+      { min: 2, max: 5, color: "#41b6c4", label: "2–5" },
+      { min: 5, max: 10, color: "#1d91c0", label: "5–10" },
+      { min: 10, max: 20, color: "#225ea8", label: "10–20" },
+      { min: 20, max: 30, color: "#253494", label: "20–30" },
+      { min: 30, max: 50, color: "#7a0177", label: "30–50" },
+      { min: 50, max: null, color: "#49006a", label: "> 50" },
+    ],
+  },
+};
+
+const j = async (u) => {
+  const r = await fetch(u);
+  if (!r.ok) throw new Error(`${r.status} ${u}`);
+  return r.json();
+};
+// All dates in this app are already ICT. Never build them through a local-time
+// Date (the browser's own zone would shift the label by a day).
+const dmy = (iso) => { const [y, m, d] = iso.slice(0, 10).split("-"); return `${d}/${m}/${y}`; };
+const dm = (iso) => { const [, m, d] = iso.slice(0, 10).split("-"); return `${d}/${m}`; };
+const dow = (iso) => {
+  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  return DOW[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+};
+const hhmm = (iso) => iso.slice(11, 16);
+// epoch ms -> ICT calendar fields, for axes that work in absolute time
+const ictParts = (ms) => { const d = new Date(ms + 7 * 36e5); return {
+  d: d.getUTCDate(), m: d.getUTCMonth() + 1, h: d.getUTCHours(), day0: Date.UTC(
+    d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - 7 * 36e5 }; };
+const num = (v, d = 0) => (v === null || v === undefined || Number.isNaN(v)) ? "–" : v.toFixed(d);
+
+function colorFor(v, bins) {
+  if (v === null || v === undefined || Number.isNaN(v)) return null;
+  for (const b of bins) if (v >= b.min && (b.max === null || v < b.max)) return b.color;
+  return bins[bins.length - 1].color;
+}
+
+/* ------------------------------------------------------------------ map */
+
+function MapPane({ legend, geo, frames, gmFrames, layer, source, field, dayIdx,
+                  nowcast, leadIdx, nowMode, onPick, onPickNowcast, focus }) {
+  const elRef = useRef(null);
+  const mapRef = useRef(null);
+  const layersRef = useRef({});      // layer -> {group, byId}
+  const selRef = useRef(null);
+  const nowRef = useRef({});          // {overlay}
+
+  const bins = layer === "nowcast" ? NOWCAST_MODES[nowMode].bins
+             : field === "x50" ? PROB_BINS : legend;
+  // gmfcast has no exceedance product; fall through to its q50 frame.
+  const polyFrames = (source === "gmfcast" && gmFrames) ? gmFrames : frames;
+  const polySource = (source === "gmfcast" && gmFrames) ? "gmfcast" : source;
+
+  useEffect(() => {
+    const map = L.map(elRef.current, {
+      preferCanvas: true, zoomControl: false, attributionControl: true,
+      minZoom: 4, maxZoom: 12,
+    }).setView([16.2, 106.5], 6);
+    L.control.zoom({ position: "topright" }).addTo(map);
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png", {
+      attribution: '&copy; OpenStreetMap, &copy; CARTO', subdomains: "abcd", maxZoom: 19,
+    }).addTo(map);
+    // Place names must sit ON TOP of the filled polygons, so they need their
+    // own pane above overlayPane (400) — and it must not swallow map clicks,
+    // which is exactly what reusing shadowPane would do.
+    map.createPane("labels");
+    map.getPane("labels").style.zIndex = 450;
+    map.getPane("labels").style.pointerEvents = "none";
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png", {
+      subdomains: "abcd", maxZoom: 19, pane: "labels",
+    }).addTo(map);
+    mapRef.current = map;
+    window.__qpf = { map, layers: layersRef.current };   // debug handle
+    return () => map.remove();
+  }, []);
+
+  // Build (once per geojson) a Leaflet layer per unit id so recolouring a
+  // frame is a setStyle sweep rather than a re-parse of 3321 polygons.
+  const polyLayer = layer === "nowcast" ? null : layer;
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    // In nowcast mode the polygon groups must be OFF — otherwise their fill
+    // shows through the raster and blurs it. Handle removal even when there is
+    // no polyLayer (the early return below would otherwise skip it).
+    if (!polyLayer) {
+      Object.values(layersRef.current).forEach((v) => map.removeLayer(v.group));
+      return;
+    }
+    if (!geo[polyLayer]) return;
+    if (!layersRef.current[polyLayer]) {
+      const byId = {};
+      const group = L.geoJSON(geo[polyLayer], {
+        renderer: L.canvas({ padding: 0.4 }),
+        style: () => ({ weight: polyLayer === "xa" ? 0.3 : 0.7, color: "#7d8b99",
+                        fillOpacity: 0.82, fillColor: "#e8f0f7" }),
+        onEachFeature: (f, lyr) => {
+          byId[f.properties.id] = lyr;
+          lyr.on("click", () => onPick(polyLayer, f.properties));
+        },
+      });
+      layersRef.current[polyLayer] = { group, byId };
+    }
+    Object.entries(layersRef.current).forEach(([k, v]) => {
+      if (k === polyLayer) v.group.addTo(map); else map.removeLayer(v.group);
+    });
+  }, [geo, polyLayer, onPick]);
+
+  // ---- nowcast raster overlay (0.05 deg PNGs swapped per lead + mode) ----
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const N = nowRef.current;
+    if (layer !== "nowcast" || !nowcast) {
+      if (N.overlay) { map.removeLayer(N.overlay); N.overlay = null; }
+      return;
+    }
+    const [latS, lonW, latN, lonE] = nowcast.manifest.bounds;
+    const b = [[latS, lonW], [latN, lonE]];
+    const url = `nowcast/maps/${nowMode}/${String(leadIdx).padStart(2, "0")}.png` +
+                `?v=${encodeURIComponent(nowcast.manifest.issue_utc)}`;
+    if (!N.overlay) {
+      N.overlay = L.imageOverlay(url, b, { opacity: 0.82, interactive: false }).addTo(map);
+    } else {
+      N.overlay.setUrl(url); N.overlay.setBounds(b);
+      if (!map.hasLayer(N.overlay)) N.overlay.addTo(map);
+    }
+  }, [layer, nowcast, leadIdx, nowMode]);
+
+  // map click -> nowcast point query
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const h = (e) => { if (layer === "nowcast") onPickNowcast(e.latlng); };
+    map.on("click", h);
+    return () => map.off("click", h);
+  }, [layer, onPickNowcast]);
+
+  // recolour polygons on frame change (ensemble sources OR gmfcast 4th source)
+  useEffect(() => {
+    if (!polyLayer) return;
+    const cur = layersRef.current[polyLayer];
+    const fr = polyFrames && polyFrames[polyLayer];
+    if (!cur || !fr) return;
+    const vals = polySource === "gmfcast"
+      ? fr[field === "q90" ? "q90" : "q50"]          // gmfcast: q50/q90 only
+      : (fr.sources[polySource] || fr.sources.ensemble)[field];
+    const row = (vals && vals[dayIdx]) || [];
+    fr.ids.forEach((id, i) => {
+      const lyr = cur.byId[id];
+      if (!lyr) return;
+      const c = colorFor(row[i], bins);
+      lyr.setStyle({ fillColor: c || "#f2f4f7", fillOpacity: c ? 0.82 : 0.35 });
+    });
+    if (selRef.current && cur.byId[selRef.current]) {
+      cur.byId[selRef.current].setStyle({ weight: 2.4, color: "#12324d" }).bringToFront();
+    }
+    // `geo` is a dependency: the commune polygons arrive after the layer is
+    // already selected, and without it they would keep their default fill.
+  }, [polyFrames, geo, polyLayer, polySource, field, dayIdx, bins]);
+
+  // highlight + zoom to the selected / searched unit
+  useEffect(() => {
+    const cur = layersRef.current[layer];
+    if (!cur) return;
+    if (selRef.current && cur.byId[selRef.current]) {
+      cur.byId[selRef.current].setStyle({ weight: layer === "xa" ? 0.3 : 0.7, color: "#7d8b99" });
+    }
+    selRef.current = focus ? focus.id : null;
+    if (focus && cur.byId[focus.id]) {
+      cur.byId[focus.id].setStyle({ weight: 2.4, color: "#12324d" }).bringToFront();
+      if (focus.zoom && focus.bounds) {
+        const [w, s, e, n] = focus.bounds;
+        mapRef.current.fitBounds([[s, w], [n, e]], { padding: [60, 60], maxZoom: 10 });
+      }
+    }
+  }, [focus, layer]);
+
+  return <div id="map" ref={elRef} />;
+}
+
+/* --------------------------------------------------------------- charts */
+
+const PAD = { l: 38, r: 10, t: 10, b: 26 };
+
+/** Round an axis maximum up so that `ticks` equal divisions land on round
+ *  numbers — otherwise a max of 10 over 4 ticks prints 0/3/5/8/10. */
+function niceMax(raw, ticks = 4, floor = 5) {
+  const target = Math.max(raw * 1.12, floor);
+  const step = target / ticks;
+  const mag = Math.pow(10, Math.floor(Math.log10(step)));
+  const nice = [1, 2, 2.5, 5, 10].find((n) => n * mag >= step - 1e-9) || 10;
+  return nice * mag * ticks;
+}
+
+function Axes({ w, h, ymax, xLabels, unit, thresholds, ticks = 4 }) {
+  const iw = w - PAD.l - PAD.r, ih = h - PAD.t - PAD.b;
+  const y = (v) => PAD.t + ih * (1 - v / ymax);
+  const out = [];
+  for (let i = 0; i <= ticks; i++) {
+    const v = (ymax * i) / ticks;
+    out.push(<g key={"t" + i}>
+      <line x1={PAD.l} x2={w - PAD.r} y1={y(v)} y2={y(v)} stroke="#eceff3" />
+      <text x={PAD.l - 5} y={y(v) + 3.5} textAnchor="end" fontSize="9.5" fill="#8b97a5">
+        {ymax >= 5 ? v.toFixed(0) : v.toFixed(1)}
+      </text>
+    </g>);
+  }
+  (thresholds || []).filter((t) => t.value <= ymax).forEach((t, i) => {
+    out.push(<g key={"th" + i}>
+      <line x1={PAD.l} x2={w - PAD.r} y1={y(t.value)} y2={y(t.value)}
+            stroke={t.color} strokeWidth="1.1" strokeDasharray="4 3" />
+      <text x={w - PAD.r - 2} y={y(t.value) - 3} textAnchor="end" fontSize="9"
+            fill={t.color}>{t.label}</text>
+    </g>);
+  });
+  (xLabels || []).forEach((lab, i) => {
+    if (!lab) return;
+    const x = PAD.l + (iw * (i + 0.5)) / xLabels.length;
+    out.push(<text key={"x" + i} x={x} y={h - 8} textAnchor="middle" fontSize="9.5"
+                   fill="#6b7a8c">{lab}</text>);
+  });
+  out.push(<text key="u" x={2} y={PAD.t - 1} fontSize="9" fill="#8b97a5">{unit}</text>);
+  return <g>{out}</g>;
+}
+
+/** Q10–Q90 whisker + Q50 marker, one column per (day, provider). */
+function BoxChart({ days, series, models, thresholds, w = 440, h = 190 }) {
+  const iw = w - PAD.l - PAD.r, ih = h - PAD.t - PAD.b;
+  const all = [];
+  models.forEach((m) => (series[m.id] || []).forEach((d) => d && d.q90 !== null && all.push(d.q90)));
+  const ymax = niceMax(Math.max(...all, 0), 4, 10);
+  const y = (v) => PAD.t + ih * (1 - Math.min(v, ymax) / ymax);
+  const slot = iw / days.length;
+  const bw = Math.min(11, (slot - 8) / models.length);
+
+  return (
+    <svg width="100%" viewBox={`0 0 ${w} ${h}`} role="img">
+      <Axes w={w} h={h} ymax={ymax} unit="mm" thresholds={thresholds}
+            xLabels={days.map((d) => dm(d))} />
+      {days.map((d, k) => models.map((m, mi) => {
+        const v = (series[m.id] || [])[k];
+        if (!v || v.q90 === null) return null;
+        const x = PAD.l + slot * k + slot / 2 + (mi - (models.length - 1) / 2) * (bw + 2);
+        return (
+          <g key={`${k}-${m.id}`}>
+            <rect x={x - bw / 2} y={y(v.q90)} width={bw} height={Math.max(1, y(v.q10) - y(v.q90))}
+                  fill={m.color} fillOpacity="0.35" rx="1.5" />
+            <line x1={x - bw / 2} x2={x + bw / 2} y1={y(v.q50)} y2={y(v.q50)}
+                  stroke={m.color} strokeWidth="2.2" />
+          </g>
+        );
+      }))}
+    </svg>
+  );
+}
+
+/** Plain grouped bars (Q90 adverse scenario, exceedance probability). */
+function BarChart({ days, series, models, thresholds, unit = "mm", ymaxMin = 10,
+                    ymaxFixed = null, w = 440, h = 175 }) {
+  const iw = w - PAD.l - PAD.r, ih = h - PAD.t - PAD.b;
+  const all = [];
+  models.forEach((m) => (series[m.id] || []).forEach((v) => v !== null && all.push(v)));
+  const ymax = ymaxFixed || niceMax(Math.max(...all, 0), 4, ymaxMin);
+  const y = (v) => PAD.t + ih * (1 - Math.min(v, ymax) / ymax);
+  const slot = iw / days.length;
+  const bw = Math.min(13, (slot - 8) / models.length);
+
+  return (
+    <svg width="100%" viewBox={`0 0 ${w} ${h}`} role="img">
+      <Axes w={w} h={h} ymax={ymax} unit={unit} thresholds={thresholds}
+            xLabels={days.map((d) => dm(d))} />
+      {days.map((d, k) => models.map((m, mi) => {
+        const v = (series[m.id] || [])[k];
+        if (v === null || v === undefined) return null;
+        const x = PAD.l + slot * k + slot / 2 + (mi - (models.length - 1) / 2) * (bw + 2);
+        return <rect key={`${k}-${m.id}`} x={x - bw / 2} y={y(v)} width={bw}
+                     height={Math.max(0.6, y(0) - y(v))} fill={m.color} rx="1.5" />;
+      }))}
+    </svg>
+  );
+}
+
+/** 3-h accumulation: one Q50 line + Q10–Q90 band per provider, own time axis.
+ *  `hours` clips the window (48 h by default — across the full 144 h the 3-h
+ *  structure is unreadable); null shows everything. */
+function PlumeChart({ models, axes, series, thresholds, hours = 48, w = 440, h = 205 }) {
+  const iw = w - PAD.l - PAD.r, bot = 34, ih = h - PAD.t - bot;
+  const times = [];
+  models.forEach((m) => (axes[m.id]?.steps || []).forEach((s) => times.push(Date.parse(s))));
+  if (!times.length) return null;
+  const t0 = Math.min(...times), tMax = Math.max(...times);
+  const t1 = hours ? Math.min(t0 + hours * 36e5, tMax) : tMax;
+
+  // Scale to what is actually on screen, not to peaks outside the window.
+  const all = [];
+  models.forEach((m) => (axes[m.id]?.steps || []).forEach((s, i) => {
+    const v = series[m.id]?.q90?.[i];
+    if (v !== null && v !== undefined && Date.parse(s) <= t1) all.push(v);
+  }));
+  const ymax = niceMax(Math.max(...all, 0), 4, 5);
+  const x = (t) => PAD.l + (iw * (t - t0)) / Math.max(1, t1 - t0);
+  const y = (v) => PAD.t + ih * (1 - Math.min(v, ymax) / ymax);
+
+  // ICT ticks: the date at midnight, the hour otherwise. Label density follows
+  // the window — 6-hourly labels over 6 days would be 27 overlapping strings.
+  const STEP = 6 * 36e5;
+  const spanH = (t1 - t0) / 36e5;
+  const labEvery = spanH <= 60 ? 6 : spanH <= 96 ? 12 : 24;
+  const ticks = [];
+  for (let t = ictParts(t0).day0; t <= t1; t += STEP) {
+    if (t < t0) continue;
+    const p = ictParts(t);
+    const midnight = p.h === 0;
+    ticks.push({
+      t, midnight,
+      show: midnight || spanH <= 60,
+      lab: p.h % labEvery !== 0 ? null
+        : midnight ? `${String(p.d).padStart(2, "0")}/${String(p.m).padStart(2, "0")}`
+                   : `${String(p.h).padStart(2, "0")}h`,
+    });
+  }
+
+  return (
+    <svg width="100%" viewBox={`0 0 ${w} ${h}`} role="img">
+      <Axes w={w} h={h - (bot - PAD.b)} ymax={ymax} unit="mm"
+            thresholds={thresholds} xLabels={[]} />
+      {ticks.map((tk, i) => (
+        <g key={i}>
+          {tk.show && (
+            <line x1={x(tk.t)} x2={x(tk.t)} y1={PAD.t} y2={PAD.t + ih}
+                  stroke={tk.midnight ? "#cfd8e2" : "#eef1f5"}
+                  strokeWidth={tk.midnight ? 1 : 0.8} />
+          )}
+          {tk.lab && (
+            <text x={x(tk.t)} y={PAD.t + ih + 12} textAnchor="middle" fontSize="9"
+                  fill={tk.midnight ? "#44525f" : "#8b97a5"}
+                  fontWeight={tk.midnight ? 600 : 400}>{tk.lab}</text>
+          )}
+        </g>
+      ))}
+      <text x={PAD.l} y={h - 4} fontSize="9" fill="#8b97a5">Giờ Việt Nam (ICT)</text>
+      {models.map((m) => {
+        const st = axes[m.id]?.steps || [], s = series[m.id];
+        if (!s || !st.length) return null;
+        const pts = st.map((iso, i) => ({ t: Date.parse(iso), x: x(Date.parse(iso)),
+                                          q10: s.q10[i], q50: s.q50[i], q90: s.q90[i] }))
+                      .filter((p) => p.q50 !== null && p.t <= t1);
+        if (!pts.length) return null;
+        const band = pts.map((p) => `${p.x},${y(p.q90)}`).join(" ") + " " +
+                     pts.slice().reverse().map((p) => `${p.x},${y(p.q10)}`).join(" ");
+        return (
+          <g key={m.id}>
+            <polygon points={band} fill={m.color} fillOpacity="0.16" />
+            <polyline points={pts.map((p) => `${p.x},${y(p.q50)}`).join(" ")}
+                      fill="none" stroke={m.color} strokeWidth="1.6" />
+            {pts.map((p, i) => (
+              <circle key={i} cx={p.x} cy={y(p.q50)} r="1.7" fill={m.color} />
+            ))}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function Keys({ models }) {
+  return <div className="keys">{models.map((m) => (
+    <span className="key" key={m.id}><i style={{ background: m.color }} />{m.short_vi}</span>
+  ))}</div>;
+}
+
+/* ------------------------------------------------------------- detail */
+
+function Detail({ unit, meta, onClose }) {
+  const { data, models, axes } = unit;
+  const [p3Hours, setP3Hours] = useState(48);
+  const days = meta.days.map((d) => d.date);
+  const th = meta.thresholds_24h;
+  const th3 = th.filter((t) => t.value <= 50);
+
+  const box = {}, q90 = {}, prob = {}, plume = {};
+  models.forEach((m) => {
+    const b = data[m.id]; if (!b) return;
+    const md = axes[m.id].days;
+    const at = (arr, d) => { const i = md.indexOf(d); return i < 0 ? null : arr[i]; };
+    box[m.id] = days.map((d) => {
+      const q10 = at(b.p24.q10, d), q50 = at(b.p24.q50, d), q9 = at(b.p24.q90, d);
+      return q50 === null ? null : { q10, q50, q90: q9 };
+    });
+    q90[m.id] = days.map((d) => at(b.p24.q90, d));
+    prob[m.id] = days.map((d) => at(b.x50, d));
+    plume[m.id] = b.p3;
+  });
+
+  return (
+    <aside className="drawer">
+      <header>
+        <div>
+          <h2>{unit.name}</h2>
+          <div className="sub">{unit.sub}</div>
+        </div>
+        <button className="xbtn" onClick={onClose} aria-label="Đóng">×</button>
+      </header>
+      <div className="body">
+        <Keys models={models} />
+
+        <div className="chart">
+          <h3>Lượng mưa tích lũy 24 giờ — Q10–Q90 và Q50</h3>
+          <p className="cap">Hộp = khoảng Q10–Q90 của tổ hợp; vạch đậm = trung vị Q50.</p>
+          <BoxChart days={days} series={box} models={models} thresholds={th} />
+        </div>
+
+        <div className="chart">
+          <h3>Kịch bản bất lợi (Q90) — mưa 24 giờ</h3>
+          <p className="cap">90% thành viên tổ hợp cho lượng mưa thấp hơn giá trị này.</p>
+          <BarChart days={days} series={q90} models={models} thresholds={th} />
+        </div>
+
+        <div className="chart">
+          <h3>Lượng mưa tích lũy 3 giờ</h3>
+          <p className="cap">
+            Đường = Q50, dải = Q10–Q90. AIFS-ENS phát 6 giờ/bước nên giá trị mỗi bước
+            gộp 6 giờ.
+          </p>
+          <div className="seg" style={{ margin: "0 0 4px" }}>
+            {[{ h: 48, t: "48 giờ tới" }, { h: 72, t: "72 giờ" }, { h: null, t: "Toàn bộ" }]
+              .map((o) => (
+                <button key={o.t} className={p3Hours === o.h ? "on" : ""}
+                        style={{ flex: "0 0 auto", fontSize: 11.5, padding: "3px 9px" }}
+                        onClick={() => setP3Hours(o.h)}>{o.t}</button>
+              ))}
+          </div>
+          <PlumeChart models={models} axes={axes} series={plume} thresholds={th3}
+                      hours={p3Hours} />
+        </div>
+
+        <div className="chart">
+          <h3>Xác suất mưa 24 giờ &gt; 50 mm</h3>
+          <p className="cap">Tỉ lệ thành viên tổ hợp vượt ngưỡng nguy hiểm 50 mm/24 giờ.</p>
+          <BarChart days={days} series={prob} models={models} unit="%" ymaxFixed={100}
+                    thresholds={[{ value: 40, label: "Rủi ro cao", color: "#a8324a" },
+                                 { value: 20, label: "Rủi ro trung bình", color: "#e6c229" }]} />
+        </div>
+
+        <p className="hint">
+          Giá trị lấy trực tiếp từ ô lưới 0,25° — là giá trị lớn nhất trong các ô lưới
+          thuộc đơn vị, không tính trung bình theo diện tích.
+        </p>
+      </div>
+    </aside>
+  );
+}
+
+/* --------------------------------------------------------------- panels */
+
+function Search({ index, layer, onPick }) {
+  const [q, setQ] = useState("");
+  const norm = (s) => s.normalize("NFD").replace(/[̀-ͯ]/g, "")
+                       .replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase();
+  const hits = useMemo(() => {
+    const t = norm(q.trim());
+    if (t.length < 2) return [];
+    const pool = layer === "tinh" ? index.tinh : index.xa;
+    return pool.filter((r) => norm(r.ten).includes(t)).slice(0, 40);
+  }, [q, layer, index]);
+
+  return (
+    <div className="card searchbox">
+      <input value={q} onChange={(e) => setQ(e.target.value)}
+             placeholder={layer === "tinh" ? "Tìm tỉnh / thành phố…" : "Tìm phường / xã…"} />
+      {hits.length > 0 && (
+        <div className="card results">
+          {hits.map((r) => (
+            <button key={r.id} onClick={() => { setQ(""); onPick(layer, r); }}>
+              <div>{r.loai ? `${r.loai} ${r.ten}` : r.ten}</div>
+              {r.ten_tinh && <div className="sub">{r.ten_tinh}</div>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Legend({ legend, field, layer, source, nowMode }) {
+  if (layer === "nowcast") {
+    const m = NOWCAST_MODES[nowMode];
+    return (
+      <div className="card pad">
+        <p className="title" style={{ marginBottom: 2 }}>{m.legendTitle}</p>
+        <p className="hint" style={{ marginTop: 0, marginBottom: 6 }}>
+          {m.sub} ({m.unit})
+        </p>
+        {m.bins.map((b, i) => (
+          <div className="legend-row" key={i}>
+            <span className="swatch" style={{ background: b.color,
+                  borderRadius: nowMode === "cls" ? "50%" : 3 }} />
+            <span>{b.label}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  const gm = source === "gmfcast";
+  const bins = field === "x50" && !gm ? PROB_BINS : legend;
+  return (
+    <div className="card pad">
+      <p className="title" style={{ marginBottom: 2 }}>
+        {field === "x50" && !gm ? "Xác suất mưa > 50 mm/24 giờ" : "Lượng mưa tích lũy 24 giờ"}
+      </p>
+      <p className="hint" style={{ marginTop: 0, marginBottom: 6 }}>
+        {gm ? (field === "q90" ? "GMFcast — kịch bản bất lợi (Q90)" : "GMFcast — trung vị (Q50)")
+          : field === "q90" ? "Kịch bản bất lợi (Q90)"
+          : field === "q50" ? "Trung vị tổ hợp (Q50)" : "Tỉ lệ thành viên tổ hợp vượt ngưỡng"}
+      </p>
+      {bins.map((b, i) => (
+        <div className="legend-row" key={i}>
+          <span className="swatch" style={{ background: b.color }} />
+          <span>{b.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Timeline({ days, dayStart = 0, dayIdx, setDayIdx, playing, setPlaying }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current?.querySelector(".tl-day.on");
+    if (el) el.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+  }, [dayIdx]);
+  return (
+    <div className="timeline">
+      <div className="tl-inner">
+        <button className="tl-play" onClick={() => setPlaying(!playing)}
+                title={playing ? "Tạm dừng" : "Chạy tự động"}>
+          {playing ? "❚❚" : "▶"}
+        </button>
+        <div className="tl-days" ref={ref}>
+          {days.map((d, i) => i < dayStart ? null : (
+            <button key={d.date} className={"tl-day" + (i === dayIdx ? " on" : "")}
+                    onClick={() => { setPlaying(false); setDayIdx(i); }}>
+              <div className="tl-dow">{dow(d.date)}</div>
+              <div className="tl-date">({dmy(d.date)})</div>
+              {d.coverage_h < 24 && <div className="tl-partial">{d.coverage_h}h</div>}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NowcastTimeline({ leads, leadIdx, setLeadIdx, playing, setPlaying }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current?.querySelector(".tl-day.on");
+    if (el) el.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+  }, [leadIdx]);
+  return (
+    <div className="timeline">
+      <div className="tl-inner">
+        <button className="tl-play" onClick={() => setPlaying(!playing)}
+                title={playing ? "Tạm dừng" : "Chạy tự động"}>
+          {playing ? "❚❚" : "▶"}
+        </button>
+        <div className="tl-days" ref={ref}>
+          {leads.map((l, i) => {
+            const t = l.valid_ict;
+            return (
+              <button key={i} className={"tl-day" + (i === leadIdx ? " on" : "")}
+                      style={{ flexBasis: 76 }}
+                      onClick={() => { setPlaying(false); setLeadIdx(i); }}>
+                <div className="tl-dow">+{l.h}h</div>
+                <div className="tl-date">{hhmm(t)} {t.slice(8, 10)}/{t.slice(5, 7)}</div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NowcastDetail({ point, onClose }) {
+  // point.series: [{h, valid_ict, interval_h, q50, q90, bucket}]
+  const s = point.series;
+  const w = 420, h = 180;
+  const iw = w - PAD.l - PAD.r, ih = h - PAD.t - PAD.b;
+  const t0 = Date.parse(s[0].valid_ict), t1 = Date.parse(s[s.length - 1].valid_ict);
+  const x = (t) => PAD.l + (iw * (t - t0)) / Math.max(1, t1 - t0);
+
+  // cumulative line chart
+  const ymax = niceMax(Math.max(...s.map((p) => p.q90 || 0), 0), 4, 10);
+  const yc = (v) => PAD.t + ih * (1 - Math.min(v, ymax) / ymax);
+  const line = (key) => s.map((p) => `${x(Date.parse(p.valid_ict))},${yc(p[key] || 0)}`).join(" ");
+
+  // per-interval intensity bar chart (mm/h = bucket / interval hours)
+  const rate = s.map((p) => (p.bucket || 0) / (p.interval_h || 1));
+  const rmax = niceMax(Math.max(...rate, 0), 4, 2);
+  const yb = (v) => PAD.t + ih * (1 - Math.min(v, rmax) / rmax);
+  const bw = Math.max(3, iw / s.length - 3);
+
+  const ticks = s.filter((_, i) => i % 3 === 0);
+  return (
+    <aside className="drawer" style={{ width: 460 }}>
+      {(() => {
+        const p = point.place || [];
+        const title = p[0] || p[1] || "VNF-cast tại điểm";
+        const region = p[0] ? p[1] : "";       // avoid repeating a country-only label
+        return (
+          <header>
+            <div>
+              <h2>{title}</h2>
+              <div className="sub">
+                {region ? region + " · " : ""}
+                {point.lat.toFixed(2)}°N, {point.lon.toFixed(2)}°E · độ phân giải cao 0,05°
+              </div>
+            </div>
+            <button className="xbtn" onClick={onClose} aria-label="Đóng">×</button>
+          </header>
+        );
+      })()}
+      <div className="body">
+        <div className="chart">
+          <h3>Lượng mưa tích lũy từ giờ phát tin</h3>
+          <p className="cap">Đường đậm = trung vị (Q50); đường nhạt = kịch bản bất lợi (Q90).</p>
+          <svg width="100%" viewBox={`0 0 ${w} ${h}`} role="img">
+            <Axes w={w} h={h} ymax={ymax} unit="mm" xLabels={[]}
+                  thresholds={[{ value: 50, label: "Nguy hiểm", color: "#ef5b8c" },
+                               { value: 100, label: "Rất nguy hiểm", color: "#a8324a" }]} />
+            {ticks.map((p, i) => (
+              <text key={i} x={x(Date.parse(p.valid_ict))} y={h - 8} textAnchor="middle"
+                    fontSize="9" fill="#6b7a8c">+{p.h}h</text>
+            ))}
+            <polyline points={line("q90")} fill="none" stroke="#2f8fe0"
+                      strokeWidth="1.4" strokeDasharray="4 3" />
+            <polyline points={line("q50")} fill="none" stroke="#1d4e89" strokeWidth="2" />
+          </svg>
+        </div>
+
+        <div className="chart">
+          <h3>Cường độ mưa từng bước dự báo</h3>
+          <p className="cap">Lượng mưa mỗi bước quy về mm/giờ (1 giờ/bước trong 6 giờ đầu,
+            sau đó 3 giờ/bước).</p>
+          <svg width="100%" viewBox={`0 0 ${w} ${h}`} role="img">
+            <Axes w={w} h={h} ymax={rmax} unit="mm/h" xLabels={[]} />
+            {ticks.map((p, i) => (
+              <text key={i} x={x(Date.parse(p.valid_ict))} y={h - 8} textAnchor="middle"
+                    fontSize="9" fill="#6b7a8c">+{p.h}h</text>
+            ))}
+            {s.map((p, k) => {
+              const cx = x(Date.parse(p.valid_ict));
+              const v = rate[k];
+              return <rect key={k} x={cx - bw / 2} y={yb(v)} width={bw}
+                           height={Math.max(0.6, yb(0) - yb(v))} fill="#2f8fe0" rx="1" />;
+            })}
+          </svg>
+        </div>
+
+        <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+          <thead><tr style={{ color: "#6b7a8c", textAlign: "left" }}>
+            <th>Hạn</th><th>Thời điểm</th><th>Tích lũy Q50</th><th>Q90</th><th>mm/h</th></tr></thead>
+          <tbody>
+            {s.filter((_, i) => i % 2 === 0).map((p, i) => (
+              <tr key={i} style={{ borderTop: "1px solid #eef2f6" }}>
+                <td>+{p.h}h</td><td>{hhmm(p.valid_ict)} {p.valid_ict.slice(8, 10)}/{p.valid_ict.slice(5, 7)}</td>
+                <td>{num(p.q50, 1)}</td><td>{num(p.q90, 1)}</td>
+                <td>{num((p.bucket || 0) / (p.interval_h || 1), 1)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </aside>
+  );
+}
+
+function Bulletin({ bulletin, meta }) {
+  const [open, setOpen] = useState(false);
+  // The Gemini bulletin is a single paragraph, so collapse by length rather
+  // than by line count (which would never actually shorten it).
+  const long = bulletin.text.length > 180;
+  const short = long ? bulletin.text.slice(0, 165).replace(/\s\S*$/, "") + " …"
+                     : bulletin.text;
+  return (
+    <div className="card pad">
+      <p className="title">Nhận định bản tin</p>
+      <div className="bulletin">{open || !long ? bulletin.text : short}</div>
+      {long && (
+        <button className="btn-link" style={{ marginTop: 6 }} onClick={() => setOpen(!open)}>
+          {open ? "Thu gọn" : "Xem đầy đủ"}
+        </button>
+      )}
+      <p className="hint" style={{ marginTop: 8 }}>
+        Phát tin {hhmm(meta.init_ict)} ICT {dmy(meta.init_ict.slice(0, 10))} · lần chạy {meta.run} ·
+        {bulletin.source === "gemini" ? " nhận định tự động (Gemini)" : " nhận định tự động"}
+      </p>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ app */
+
+function App() {
+  const [meta, setMeta] = useState(null);
+  const [bulletin, setBulletin] = useState(null);
+  const [frames, setFrames] = useState(null);
+  const [index, setIndex] = useState(null);
+  const [geo, setGeo] = useState({});
+  const [layer, setLayer] = useState("tinh");
+  const [source, setSource] = useState("ensemble");
+  const [field, setField] = useState("q50");
+  const [dayIdx, setDayIdx] = useState(0);
+  const [leadIdx, setLeadIdx] = useState(0);
+  const [nowMode, setNowMode] = useState("int");   // cls | fine | int
+  const [playing, setPlaying] = useState(true);
+  const [focus, setFocus] = useState(null);
+  const [unit, setUnit] = useState(null);
+  const [nowcast, setNowcast] = useState(null);    // {manifest} or null
+  const [gmFrames, setGmFrames] = useState(null);
+  const [nowPoint, setNowPoint] = useState(null);
+  const cache = useRef({});
+  const gridCache = useRef(null);
+
+  useEffect(() => {
+    const bust = `?t=${Date.now()}`;
+    (async () => {
+      const m = await j("latest.json" + bust);
+      const v = `?v=${encodeURIComponent(m.created_utc)}`;
+      const [b, f, ix, g] = await Promise.all([
+        j("bulletin.json" + bust), j("data/frames.json" + v),
+        j("static/index.json"), j("static/tinh.geojson"),
+      ]);
+      setMeta(m); setBulletin(b); setFrames(f); setIndex(ix); setGeo({ tinh: g });
+      const k = m.days.findIndex((d) => d.coverage_h >= 24);
+      setDayIdx(k < 0 ? 0 : k);
+      // Optional gmfcast assets — absent in the base build, so feature-detect.
+      const opt = (u) => fetch(u).then((r) => r.ok ? r.json() : null).catch(() => null);
+      const man = await opt("nowcast/manifest.json" + bust);
+      if (man) {
+        const adm = await opt(`nowcast/admin.json?v=${encodeURIComponent(man.issue_utc)}`);
+        setNowcast({ manifest: man, admin: adm });
+      }
+      setGmFrames(await opt("data/gm_frames.json" + v));
+    })().catch((e) => {
+      document.getElementById("root").innerHTML =
+        `<div class="loading">Không tải được dữ liệu: ${e.message}</div>`;
+    });
+  }, []);
+
+  // lazy-load the 3321 commune polygons only when that layer is first shown
+  useEffect(() => {
+    if (layer === "xa" && !geo.xa) {
+      j("static/xa.geojson").then((g) => setGeo((p) => ({ ...p, xa: g })));
+    }
+  }, [layer, geo.xa]);
+
+  // self-running animation — over forecast days, or over nowcast leads
+  useEffect(() => {
+    if (!playing || !meta) return;
+    if (layer === "nowcast" && nowcast) {
+      const n = nowcast.manifest.leads.length;
+      const t = setInterval(() => setLeadIdx((i) => (i + 1) % n), 900);
+      return () => clearInterval(t);
+    }
+    const start = Math.max(0, meta.days.findIndex((d) => d.coverage_h >= 24));
+    const t = setInterval(() => setDayIdx((i) =>
+      (i + 1 >= meta.days.length ? start : i + 1)), 1600);
+    return () => clearInterval(t);
+  }, [playing, meta, layer, nowcast]);
+
+  // gmfcast has no exceedance product — bounce off x50 when it is selected
+  useEffect(() => {
+    if (source === "gmfcast" && field === "x50") setField("q50");
+  }, [source, field]);
+
+  // nowcast point query: fetch all lead grids once, then index by lat/lon
+  const onPickNowcast = useCallback(async (latlng) => {
+    if (!nowcast) return;
+    if (!gridCache.current) {
+      const n = nowcast.manifest.leads.length;
+      const v = `?v=${encodeURIComponent(nowcast.manifest.issue_utc)}`;
+      gridCache.current = Promise.all(
+        Array.from({ length: n }, (_, k) =>
+          j(`nowcast/grids/${String(k).padStart(2, "0")}.json${v}`)));
+    }
+    const grids = await gridCache.current;
+    const g0 = grids[0];
+    const i = Math.round((g0.lat0 - latlng.lat) / -g0.dlat);
+    const jx = Math.round((latlng.lng - g0.lon0) / g0.dlon);
+    if (i < 0 || i >= g0.nlat || jx < 0 || jx >= g0.nlon) { setNowPoint(null); return; }
+    const flat = i * g0.nlon + jx;
+    const series = nowcast.manifest.leads.map((l, k) => ({
+      h: l.h, valid_ict: l.valid_ict, interval_h: l.interval_h,
+      q50: grids[k].q50[flat], q90: grids[k].q90[flat], bucket: grids[k].bucket[flat],
+    }));
+    // reverse-geocode the pixel (admin.json shares the click-grid geometry)
+    let place = null;
+    const a = nowcast.admin;
+    if (a) {
+      const ai = Math.round((a.lat0 - latlng.lat) / -a.dlat);
+      const aj = Math.round((latlng.lng - a.lon0) / a.dlon);
+      if (ai >= 0 && ai < a.nlat && aj >= 0 && aj < a.nlon) {
+        const k = a.idx[ai * a.nlon + aj];
+        if (k >= 0) place = a.names[k];    // [primary, secondary]
+      }
+    }
+    setNowPoint({ lat: latlng.lat, lon: latlng.lng, series, place });
+  }, [nowcast]);
+
+  const models = useMemo(() => (meta ? meta.models.map((m) => ({
+    ...m, color: MODEL_COLOR[m.id] || "#888",
+  })) : []), [meta]);
+
+  const openUnit = useCallback(async (lyr, props) => {
+    setFocus({ id: props.id, bounds: props.bounds, zoom: !!props.zoomOnPick });
+    const path = lyr === "tinh" ? "data/tinh.json" : `data/xa/${props.tinh}.json`;
+    if (!cache.current[path]) cache.current[path] = j(path);
+    const chunk = await cache.current[path];
+    const rec = chunk.units[props.id];
+    if (!rec) return;
+    const src = index[lyr].find((r) => r.id === props.id) || {};
+    setUnit({
+      id: props.id, data: rec, axes: chunk.axes,
+      models: (meta ? meta.models : []).filter((m) => rec[m.id])
+                .map((m) => ({ ...m, color: MODEL_COLOR[m.id] })),
+      name: lyr === "tinh" ? (src.ten || props.ten)
+                           : `${src.loai || ""} ${src.ten || props.ten}`.trim(),
+      sub: lyr === "tinh" ? "Tỉnh / Thành phố"
+                          : `${src.ten_tinh || ""} · Phường / Xã`,
+    });
+  }, [index, meta]);
+
+  const pickFromSearch = useCallback((lyr, rec) => {
+    const gj = geo[lyr];
+    const f = gj && gj.features.find((x) => x.properties.id === rec.id);
+    openUnit(lyr, { ...(f ? f.properties : rec), zoomOnPick: true });
+  }, [geo, openUnit]);
+
+  if (!meta || !frames) return <div className="loading">Đang tải dữ liệu dự báo…</div>;
+
+  const staleModels = meta.models.filter((m) => m.stale);
+  // Align the day window across all sources: drop the leading partial ICT day
+  // so every source (and VNForce-cast) starts at the same tile.
+  const dayStart = Math.max(0, meta.days.findIndex((d) => d.coverage_h >= 24));
+
+  return (
+    <>
+      <MapPane legend={meta.legend} geo={geo} frames={frames} gmFrames={gmFrames}
+               layer={layer} source={source} field={field} dayIdx={dayIdx}
+               nowcast={nowcast} leadIdx={leadIdx} nowMode={nowMode} onPick={openUnit}
+               onPickNowcast={onPickNowcast} focus={focus} />
+
+      <div className="float topleft stack">
+        {index && layer !== "nowcast" &&
+          <Search index={index} layer={layer} onPick={pickFromSearch} />}
+
+        <div className="card pad">
+          <p className="title">Lớp bản đồ</p>
+          <div className="seg">
+            <button className={layer === "tinh" ? "on" : ""} onClick={() => setLayer("tinh")}>
+              Tỉnh / Thành
+            </button>
+            <button className={layer === "xa" ? "on" : ""} onClick={() => setLayer("xa")}>
+              Phường / Xã{layer === "xa" && !geo.xa ? " …" : ""}
+            </button>
+            {nowcast && (
+              <button className={layer === "nowcast" ? "on" : ""}
+                      onClick={() => { setLayer("nowcast"); setPlaying(true); }}>
+                Độ phân giải cao VNF-cast
+              </button>
+            )}
+          </div>
+
+          {layer !== "nowcast" && <>
+            <p className="title" style={{ margin: "11px 0 2px" }}>Nguồn dự báo</p>
+            <p className="hint" style={{ margin: "0 0 6px" }}>
+              <b>Tổ hợp</b> = trung vị 3 mô hình (IFS-ENS, GEFS, AIFS-ENS).{gmFrames && " VNForce-cast dự báo đến 48 giờ. " +
+                "Xem chi tiết độ phân giải cao, nhấp vào Độ phân giải cao VNF-cast."}
+            </p>
+            <div className="seg">
+              <button className={source === "ensemble" ? "on" : ""}
+                      onClick={() => setSource("ensemble")}>{ENSEMBLE_LABEL}</button>
+              {models.map((m) => (
+                <button key={m.id} className={source === m.id ? "on" : ""}
+                        onClick={() => setSource(m.id)}>{m.short_vi}</button>
+              ))}
+              {gmFrames && (
+                <button className={source === "gmfcast" ? "on" : ""}
+                        onClick={() => setSource("gmfcast")}>VNF-cast</button>
+              )}
+            </div>
+            <p className="title" style={{ margin: "11px 0 8px" }}>Chỉ số hiển thị</p>
+            <div className="seg">
+              {Object.values(FIELDS).map((f) => (
+                <button key={f.key} className={field === f.key ? "on" : ""}
+                        disabled={source === "gmfcast" && f.key === "x50"}
+                        onClick={() => setField(f.key)}>{f.label}</button>
+              ))}
+            </div>
+          </>}
+
+          {layer === "nowcast" && <>
+            <p className="title" style={{ margin: "11px 0 8px" }}>Kiểu hiển thị</p>
+            <div className="seg">
+              {Object.entries(NOWCAST_MODES).map(([k, m]) => (
+                <button key={k} className={nowMode === k ? "on" : ""}
+                        onClick={() => setNowMode(k)}>{m.label}</button>
+              ))}
+            </div>
+            <p className="hint" style={{ margin: "10px 0 0" }}>
+              VNForce-cast dự báo đến 48 giờ (1 giờ/bước trong 6 giờ đầu,
+              sau đó 3 giờ/bước). Phát tin {hhmm(nowcast.manifest.issue_ict)} ICT
+              {" "}{nowcast.manifest.issue_ict.slice(8, 10)}/{nowcast.manifest.issue_ict.slice(5, 7)}.
+              Nhấp vào bản đồ để xem chuỗi thời gian tại điểm.
+            </p>
+          </>}
+        </div>
+
+        <Legend legend={meta.legend} field={field} layer={layer} source={source}
+                nowMode={nowMode} />
+        {layer !== "nowcast" && bulletin && <Bulletin bulletin={bulletin} meta={meta} />}
+
+        {layer !== "nowcast" && staleModels.length > 0 && (
+          <div className="card stale">
+            {staleModels.map((m) => `${m.short_vi} chưa có bản chạy ${meta.run}, đang dùng ${m.run}`)
+                        .join("; ")}.
+          </div>
+        )}
+
+        {layer !== "nowcast" && (
+          <div className="card pad hint">
+            Giá trị lấy trực tiếp từ ô lưới 0,25° (lớn nhất trong các ô thuộc đơn vị),
+            không tính trung bình theo diện tích. Ngày tính theo giờ Việt Nam 00–24h.
+            Với lớp tỉnh/thành, các ô lưới ngoài khơi xa (trên 150 km tính từ đất
+            liền) không được tính vào giá trị lớn nhất; các đặc khu Hoàng Sa và
+            Trường Sa vẫn có dự báo riêng ở lớp phường/xã.
+            Nhấp vào một đơn vị trên bản đồ để xem chi tiết theo từng mô hình.
+          </div>
+        )}
+      </div>
+
+      {layer === "nowcast"
+        ? <NowcastTimeline leads={nowcast.manifest.leads} leadIdx={leadIdx}
+                           setLeadIdx={setLeadIdx} playing={playing} setPlaying={setPlaying} />
+        : <Timeline days={meta.days} dayStart={dayStart} dayIdx={dayIdx} setDayIdx={setDayIdx}
+                    playing={playing} setPlaying={setPlaying} />}
+
+      {unit && layer !== "nowcast" &&
+        <Detail unit={unit} meta={meta} onClose={() => { setUnit(null); setFocus(null); }} />}
+      {nowPoint && layer === "nowcast" &&
+        <NowcastDetail point={nowPoint} onClose={() => setNowPoint(null)} />}
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
